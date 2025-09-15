@@ -1,0 +1,2 @@
+beautifulsoup4>=4.12
+pytest>=8.0   #use for future testing as more code gets added in later parts
