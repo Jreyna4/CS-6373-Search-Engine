@@ -1,28 +1,27 @@
-"""CSCI 6373 — Part 1 Tkinter GUI (sketch-aligned + plugin loader)
+
+"""CSCI 6373 — Part 1 Tkinter GUI (sketch-aligned + plugin loader + vocabulary view)
 
 Purpose
 -------
 Implements your sketched layout for Part 1 and auto-loads future parts (Part 2–4)
-from a simple registry in `plugins.py`, so you don't have to edit this file again.
-- Header with course & group #
-- Tabs: Part 1 (working) + dynamic tabs for future parts via PLUGINS
-- "Currently selected" indicator
-- Part 1: Zip selection ("Open…" or "Use Default (Jan.zip)") + Extract + Search
+from a simple registry in `plugins.py`. The Part 1 panel now shows:
+- Indexed files (left/top)
+- Vocabulary (unique extracted words, left/bottom)
+- Key Search (right)
 
 How it works
 ------------
 - Part 1:
   - If a zip is chosen with **Open**, we index that exact file using
     `build_index_at(path)`; otherwise **Extract** falls back to `build_index()`
-    which auto-locates `Jan.zip` in repo root/parents.
-  - Searching uses the in-memory index built by Extract.
+    which auto-locates `Jan.zip`.
+  - After extraction, we populate BOTH lists: files and vocabulary.
 - Plugins:
   - `plugins.py` defines: PLUGINS = [(tab_title, "mysearch.partN"), ...]
   - For each entry, we try to import the module and call `build_tab(parent)`.
-  - If the module isn't present yet, the tab shows a friendly placeholder.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 from pathlib import Path
 
 # Optional plugin registry
@@ -37,7 +36,7 @@ try:  # package/module run: python -m mysearch.gui
 except ImportError:
     # direct script run: python path/to/src/mysearch/gui.py
     import os, sys, importlib
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # add <repo>/src
     _parser = importlib.import_module("mysearch.parser")
     build_index = _parser.build_index
     build_index_at = _parser.build_index_at
@@ -48,7 +47,7 @@ class MySearchGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MySearchEngine.com — CSCI 6373")
-        self.geometry("950x650")
+        self.geometry("1000x680")
 
         self.selected_zip: Path | None = None
         self.index = None  # Dict[str, Set[str]]
@@ -115,7 +114,7 @@ class MySearchGUI(tk.Tk):
         two_col = ttk.Frame(outer)
         two_col.pack(fill=tk.BOTH, expand=True)
 
-        # Left: Word Extraction
+        # Left column (Word Extraction): two stacked frames
         left = ttk.Frame(two_col, padding=(0, 0, 12, 0))
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         ttk.Label(left, text="Word Extraction", font=("Segoe UI", 11, "bold")).pack(anchor="w")
@@ -124,11 +123,20 @@ class MySearchGUI(tk.Tk):
         # Indexed files list
         lf = ttk.LabelFrame(left, text="Indexed files")
         lf.pack(fill=tk.BOTH, expand=True)
-        self.files_list = tk.Listbox(lf, height=16)
+        self.files_list = tk.Listbox(lf, height=12)
         yscroll1 = ttk.Scrollbar(lf, orient="vertical", command=self.files_list.yview)
         self.files_list.configure(yscrollcommand=yscroll1.set)
         self.files_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         yscroll1.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Vocabulary list (unique words)
+        wf = ttk.LabelFrame(left, text="Vocabulary (unique words)")
+        wf.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        self.words_list = tk.Listbox(wf, height=12)
+        yscrollw = ttk.Scrollbar(wf, orient="vertical", command=self.words_list.yview)
+        self.words_list.configure(yscrollcommand=yscrollw.set)
+        self.words_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        yscrollw.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.summary_var = tk.StringVar(value="No index yet.")
         ttk.Label(left, textvariable=self.summary_var).pack(anchor="w", pady=(6, 0))
@@ -153,7 +161,7 @@ class MySearchGUI(tk.Tk):
         # Matches list
         rf = ttk.LabelFrame(right, text="Matches")
         rf.pack(fill=tk.BOTH, expand=True)
-        self.results_list = tk.Listbox(rf, height=16)
+        self.results_list = tk.Listbox(rf, height=25)
         yscroll2 = ttk.Scrollbar(rf, orient="vertical", command=self.results_list.yview)
         self.results_list.configure(yscrollcommand=yscroll2.set)
         self.results_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -176,6 +184,7 @@ class MySearchGUI(tk.Tk):
         self.zip_name_var.set(f"File name: {self.selected_zip.name}")
         self.index = None
         self.files_list.delete(0, tk.END)
+        self.words_list.delete(0, tk.END)
         self.results_list.delete(0, tk.END)
         self.summary_var.set("Ready to extract from selected zip.")
 
@@ -184,6 +193,7 @@ class MySearchGUI(tk.Tk):
         self.zip_name_var.set("File name: No file selected (using default Jan.zip)")
         self.index = None
         self.files_list.delete(0, tk.END)
+        self.words_list.delete(0, tk.END)
         self.results_list.delete(0, tk.END)
         self.summary_var.set("Ready to extract from default Jan.zip.")
 
@@ -200,12 +210,17 @@ class MySearchGUI(tk.Tk):
             messagebox.showerror("Error", f"Failed to build index: {e}")
             return
 
-        # Populate files list & summary
+        # Populate files list & vocabulary
         self.files_list.delete(0, tk.END)
+        self.words_list.delete(0, tk.END)
         vocab = set()
         for fname, terms in sorted(self.index.items()):
             self.files_list.insert(tk.END, f"./Jan/{Path(fname).name}")
             vocab |= terms
+
+        for w in sorted(vocab):
+            self.words_list.insert(tk.END, w)
+
         self.summary_var.set(f"Indexed {len(self.index)} files • Vocabulary size {len(vocab)}.")
 
     def _on_search(self):
@@ -222,6 +237,7 @@ class MySearchGUI(tk.Tk):
                 self.results_list.insert(tk.END, f"./Jan/{Path(m).name}")
         else:
             self.results_list.insert(tk.END, "no match")
+
 
 if __name__ == "__main__":
     app = MySearchGUI()

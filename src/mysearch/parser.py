@@ -1,4 +1,4 @@
-"""CSCI 6373 — Part 1 HTML parser utilities
+"""CSCI 6373 — Part 1 HTML parser utilities (PyInstaller-ready)
 
 Purpose
 -------
@@ -10,9 +10,12 @@ Also provides `build_index_at(path)` for GUIs that let a user pick a zip.
 
 How it works
 ------------
-1) **Locate `Jan.zip` automatically**:
+1) **Locate `Jan.zip` automatically** (robust to different run modes):
    - Walks up parent directories from BOTH the current working directory and
-     this file's directory (robust to running from repo root, `src/`, or `src/mysearch/`).
+     this file's directory (covers running from repo root, `src/`, etc.).
+   - When packaged with **PyInstaller**:
+       * Checks the one-file extraction dir `sys._MEIPASS`.
+       * Checks the folder containing the frozen executable.
 2) **Extract visible text**:
    - If `beautifulsoup4` is available, strip `script/style/noscript` tags and
      use `get_text()`.
@@ -20,7 +23,10 @@ How it works
 3) **Tokenize** with a regex that keeps only A–Z letters and lowercases.
 4) Build an in-memory mapping: `filename -> set(tokens)`.
 """
+from __future__ import annotations
+
 import re
+import sys
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Set, Iterable, Union
@@ -58,6 +64,19 @@ def _candidates_for(zip_name: str) -> Iterable[Path]:
     here = Path(__file__).resolve()
     for p in [here.parent, *list(here.parents)[:6]]:
         yield p / zip_name
+    # 3) PyInstaller one-file extraction dir (_MEIPASS) if present
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        try:
+            yield Path(sys._MEIPASS) / zip_name  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    # 4) Folder containing the frozen executable (one-folder builds)
+    if getattr(sys, "frozen", False):
+        try:
+            exe_dir = Path(sys.executable).resolve().parent
+            yield exe_dir / zip_name
+        except Exception:
+            pass
 
 def _find_zip(zip_name: str) -> Path:
     """Return the first existing path to zip_name from our candidates."""
@@ -72,7 +91,7 @@ def _find_zip(zip_name: str) -> Path:
         seen.add(c)
         if c.exists():
             return c
-    raise FileNotFoundError(f"Could not locate {zip_name} by searching CWD and parent directories.")
+    raise FileNotFoundError(f"Could not locate {zip_name} by searching CWD, package dirs, and frozen paths.")
 
 # ---------- Public API ----------
 def build_index(zip_name: str = "Jan.zip") -> Dict[str, Set[str]]:
