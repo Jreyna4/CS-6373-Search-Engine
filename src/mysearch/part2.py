@@ -1,16 +1,14 @@
 # src/mysearch/part2.py
 """
-Part 2 — Indexer + Search
-Matches Part 1's two-pane layout:
-  Left: zip pick + Build Index + Indexed files
-  Right: query box + Search button + Matches (names only)
+Part 2 — Indexer + Search (names-only UI)
+Adds two debug buttons next to 'Build Index':
+  - Show Preview Index  (small, quick for demo)
+  - Show Full Index     (complete dump: freq, tfidf, positions, doc length/norm)
 
-Notes
-- Does NOT auto-build on open (you chose manual Build Index).
-- Uses Jan.zip if no file is selected.
+Meets Tasks 1–4 (no crawler/outlinks).
 """
 
-from typing import Set
+from typing import Set, List
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -22,6 +20,7 @@ from .part2_core import (
     phrase_search,
     vector_rank,
 )
+
 
 class Part2Tab:
     def __init__(self, parent: ttk.Frame):
@@ -48,7 +47,13 @@ class Part2Tab:
         left = ttk.Frame(two_col, padding=(0, 0, 12, 0))
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         ttk.Label(left, text="Indexer", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Button(left, text="Build Index", command=self._on_build_index).pack(anchor="w", pady=(6, 6))
+
+        # Row with Build + Debug buttons
+        btn_row = ttk.Frame(left)
+        btn_row.pack(anchor="w", pady=(6, 6))
+        ttk.Button(btn_row, text="Build Index", command=self._on_build_index).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="Show Preview Index", command=self._show_internal_preview).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(btn_row, text="Show Full Index", command=self._show_internal_full).pack(side=tk.LEFT, padx=(8, 0))
 
         # Indexed files list (names only)
         lf = ttk.LabelFrame(left, text="Indexed files")
@@ -65,7 +70,7 @@ class Part2Tab:
         # Vertical separator
         ttk.Separator(two_col, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=4)
 
-        # Right column — Key Search (names only results)
+        # Right column — Key Search (names-only results)
         right = ttk.Frame(two_col, padding=(12, 0, 0, 0))
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         ttk.Label(right, text="Key Search", font=("Segoe UI", 11, "bold")).pack(anchor="w")
@@ -93,15 +98,10 @@ class Part2Tab:
 
     # ---- required by plugin loader ----
     def widget(self):
-        # gui.py calls build_tab(parent) which returns this container
         return self._get_root()
 
     def _get_root(self):
-        # The outermost frame we packed in __init__ is parent.winfo_children()[0]
-        # but since we keep references, simply return the top-level via traversing results_list
-        # which sits under the same outer. Simpler: walk up to the top master Frame.
-        # In practice, returning the parent passed to build_tab is enough;
-        # but we expose this method for clarity and future adjustments.
+        # Return the top-level container we built into
         return self.results_list.nametowidget(self.results_list.winfo_parent()).nametowidget(
             self.results_list.nametowidget(self.results_list.winfo_parent()).winfo_parent()
         )
@@ -196,8 +196,124 @@ class Part2Tab:
         self.results_list.delete(0, tk.END)
         self.summary_var.set("Ready to build index.")
 
+    # ==============================
+    # Debug popups: Preview vs Full
+    # ==============================
+    def _show_internal_preview(self):
+        """Small, fast snapshot: limited terms/postings/positions."""
+        if not self.inv:
+            messagebox.showwarning("No index", "Please Build Index first.")
+            return
+
+        LIMIT_DOCS = 12
+        LIMIT_TERMS = 20
+        LIMIT_POSTINGS = 6
+        LIMIT_POSITIONS = 12
+
+        lines: List[str] = []
+        # --- Document table (preview) ---
+        lines.append("=== Document Table (doc_id -> path, length, norm) ===")
+        for doc_id in sorted(self.inv.docs.keys())[:LIMIT_DOCS]:
+            info = self.inv.docs[doc_id]
+            fname = info.path.split("/")[-1]
+            lines.append(f"[{doc_id}] ./{fname} (len={info.length}, norm={info.norm:.4f})")
+        extra_docs = len(self.inv.docs) - LIMIT_DOCS
+        if extra_docs > 0:
+            lines.append(f"... and {extra_docs} more document(s)")
+        lines.append("")
+
+        # --- Inverted index (preview) ---
+        lines.append("=== Inverted Index (term -> {doc_id: (freq, tfidf, positions)}) ===")
+        terms = sorted(self.inv.inv.keys())[:LIMIT_TERMS]
+        for term in terms:
+            lines.append(f"'{term}':")
+            postings = self.inv.inv[term]
+            c = 0
+            for d in sorted(postings.keys()):
+                post = postings[d]
+                pos_show = post.positions[:LIMIT_POSITIONS]
+                pos_str = ", ".join(str(p) for p in pos_show)
+                suffix = " ..." if len(post.positions) > LIMIT_POSITIONS else ""
+                lines.append(f"    -> Doc {d}: freq={post.freq}, tfidf={post.tfidf:.4f}, positions=[{pos_str}{suffix}]")
+                c += 1
+                if c >= LIMIT_POSTINGS:
+                    left = len(postings) - LIMIT_POSTINGS
+                    if left > 0:
+                        lines.append(f"    ... and {left} more posting(s)")
+                    break
+
+        self._open_text_popup("Internal Index Structure — PREVIEW", lines, w=850, h=620)
+
+    def _show_internal_full(self):
+        """Complete dump: ALL docs, ALL terms, ALL postings with freq/tfidf/positions."""
+        if not self.inv:
+            messagebox.showwarning("No index", "Please Build Index first.")
+            return
+
+        lines: List[str] = []
+
+        # --- Full Document Table ---
+        lines.append("=== Document Table (doc_id -> path, length, norm) ===")
+        for doc_id in sorted(self.inv.docs.keys()):
+            info = self.inv.docs[doc_id]
+            fname = info.path.split("/")[-1]
+            lines.append(f"[{doc_id}] ./{fname} (len={info.length}, norm={info.norm:.4f})")
+        lines.append("")
+
+        # --- Full Inverted Index Dump ---
+        lines.append("=== Inverted Index (term -> {doc_id: (freq, tfidf, positions[])}) ===")
+        for term in sorted(self.inv.inv.keys()):
+            lines.append(f"'{term}':")
+            postings = self.inv.inv[term]
+            for d in sorted(postings.keys()):
+                post = postings[d]
+                pos_str = ", ".join(str(p) for p in post.positions)
+                lines.append(f"    -> Doc {d}: freq={post.freq}, tfidf={post.tfidf:.4f}, positions=[{pos_str}]")
+        lines.append("")
+
+        self._open_text_popup("Internal Index Structure — FULL DUMP", lines, w=980, h=720)
+
+    # ---- popup builder & clipboard helper ----
+    def _open_text_popup(self, title: str, lines: List[str], w=900, h=700):
+        win = tk.Toplevel(self._get_root())
+        win.title(title)
+        win.geometry(f"{int(w)}x{int(h)}")
+
+        controls = ttk.Frame(win)
+        controls.pack(fill=tk.X, padx=8, pady=(8, 0))
+        ttk.Button(controls, text="Copy to Clipboard", command=lambda: self._copy_to_clipboard("\n".join(lines))).pack(side=tk.LEFT)
+        ttk.Button(controls, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+
+        text_frame = ttk.Frame(win)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        yscroll = ttk.Scrollbar(text_frame, orient="vertical")
+        xscroll = ttk.Scrollbar(text_frame, orient="horizontal")
+        txt = tk.Text(
+            text_frame,
+            wrap="none",
+            yscrollcommand=yscroll.set,
+            xscrollcommand=xscroll.set,
+            font=("Consolas", 10),
+        )
+        yscroll.config(command=txt.yview)
+        xscroll.config(command=txt.xview)
+
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        xscroll.pack(side=tk.BOTTOM, fill=tk.X)
+
+        txt.insert("1.0", "\n".join(lines))
+        txt.config(state="disabled")
+
+    def _copy_to_clipboard(self, s: str):
+        root = self._get_root().winfo_toplevel()
+        root.clipboard_clear()
+        root.clipboard_append(s)
+        root.update()  # keep it after window closes
+
+
 def build_tab(parent):
     # Create and mount the tab’s UI into the parent, and return the container.
     tab = Part2Tab(parent)
-    # In our layout, returning 'parent' itself is correct because we packed into it.
     return parent
