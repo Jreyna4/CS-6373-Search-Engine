@@ -1,6 +1,7 @@
 # src/mysearch/part2.py
 """
 Part 2 — Indexer + Search (names-only UI)
+
 Adds two debug buttons next to 'Build Index':
   - Show Preview Index  (small, quick for demo)
   - Show Full Index     (complete dump: freq, tfidf, positions, doc length/norm)
@@ -9,6 +10,7 @@ Meets Tasks 1–4 (no crawler/outlinks).
 """
 
 from typing import Set, List
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -24,8 +26,8 @@ from .part2_core import (
 
 class Part2Tab:
     def __init__(self, parent: ttk.Frame):
-        # outer
-        outer = ttk.Frame(parent, padding=12)
+        # outer container (keep a reference for popups/clipboard)
+        self._outer = outer = ttk.Frame(parent, padding=12)
         outer.pack(fill=tk.BOTH, expand=True)
 
         # Zip selection row (same vibe as Part 1)
@@ -98,13 +100,7 @@ class Part2Tab:
 
     # ---- required by plugin loader ----
     def widget(self):
-        return self._get_root()
-
-    def _get_root(self):
-        # Return the top-level container we built into
-        return self.results_list.nametowidget(self.results_list.winfo_parent()).nametowidget(
-            self.results_list.nametowidget(self.results_list.winfo_parent()).winfo_parent()
-        )
+        return self._outer
 
     # ---- UI callbacks ----
     def _on_open_zip(self):
@@ -115,7 +111,7 @@ class Part2Tab:
         if not path:
             return
         self.selected_zip_path = path
-        self.zip_name_var.set(f"File name: {path.split('/')[-1] or path.split('\\\\')[-1]}")
+        self.zip_name_var.set(f"File name: {Path(path).name}")
         self._clear_lists()
 
     def _use_default_zip(self):
@@ -137,7 +133,7 @@ class Part2Tab:
         # populate files list (names only)
         self.files_list.delete(0, tk.END)
         for d in sorted(self.inv.docs.keys()):
-            self.files_list.insert(tk.END, f"./Jan/{self.inv.docs[d].path.split('/')[-1]}")
+            self.files_list.insert(tk.END, f"./Jan/{Path(self.inv.docs[d].path).name}")
 
         self.summary_var.set(f"Indexed {self.inv.N} files.")
 
@@ -181,7 +177,7 @@ class Part2Tab:
             self.results_list.insert(tk.END, "no match")
         else:
             for d, _score in ranked:
-                self.results_list.insert(tk.END, f"./Jan/{self.inv.docs[d].path.split('/')[-1]}")
+                self.results_list.insert(tk.END, f"./Jan/{Path(self.inv.docs[d].path).name}")
 
     # ---- helpers ----
     def _dump_names(self, docs: Set[int]):
@@ -189,7 +185,7 @@ class Part2Tab:
             self.results_list.insert(tk.END, "no match")
             return
         for d in sorted(docs):
-            self.results_list.insert(tk.END, f"./Jan/{self.inv.docs[d].path.split('/')[-1]}")
+            self.results_list.insert(tk.END, f"./Jan/{Path(self.inv.docs[d].path).name}")
 
     def _clear_lists(self):
         self.files_list.delete(0, tk.END)
@@ -215,7 +211,7 @@ class Part2Tab:
         lines.append("=== Document Table (doc_id -> path, length, norm) ===")
         for doc_id in sorted(self.inv.docs.keys())[:LIMIT_DOCS]:
             info = self.inv.docs[doc_id]
-            fname = info.path.split("/")[-1]
+            fname = Path(info.path).name
             lines.append(f"[{doc_id}] ./{fname} (len={info.length}, norm={info.norm:.4f})")
         extra_docs = len(self.inv.docs) - LIMIT_DOCS
         if extra_docs > 0:
@@ -256,7 +252,7 @@ class Part2Tab:
         lines.append("=== Document Table (doc_id -> path, length, norm) ===")
         for doc_id in sorted(self.inv.docs.keys()):
             info = self.inv.docs[doc_id]
-            fname = info.path.split("/")[-1]
+            fname = Path(info.path).name
             lines.append(f"[{doc_id}] ./{fname} (len={info.length}, norm={info.norm:.4f})")
         lines.append("")
 
@@ -275,7 +271,7 @@ class Part2Tab:
 
     # ---- popup builder & clipboard helper ----
     def _open_text_popup(self, title: str, lines: List[str], w=900, h=700):
-        win = tk.Toplevel(self._get_root())
+        win = tk.Toplevel(self._outer)
         win.title(title)
         win.geometry(f"{int(w)}x{int(h)}")
 
@@ -307,13 +303,12 @@ class Part2Tab:
         txt.config(state="disabled")
 
     def _copy_to_clipboard(self, s: str):
-        root = self._get_root().winfo_toplevel()
+        root = self._outer.winfo_toplevel()
         root.clipboard_clear()
         root.clipboard_append(s)
         root.update()  # keep it after window closes
 
 
 def build_tab(parent):
-    # Create and mount the tab’s UI into the parent, and return the container.
-    tab = Part2Tab(parent)
-    return parent
+    """Entry point used by the plugin loader."""
+    return Part2Tab(parent).widget()
