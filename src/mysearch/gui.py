@@ -158,6 +158,10 @@ class MySearchGUI(tk.Tk):
         ent.bind("<Return>", lambda e: self._on_search())
         ttk.Button(search_row, text="Search", command=self._on_search).pack(side=tk.LEFT)
 
+        #NEW: docs matched counter
+        self.match_var = tk.StringVar(value="Docs matched: 0")
+        ttk.Label(search_row, textvariable=self.match_var).pack(side="left", padx=(10, 0))
+
         # Matches list
         rf = ttk.LabelFrame(right, text="Matches")
         rf.pack(fill=tk.BOTH, expand=True)
@@ -222,21 +226,29 @@ class MySearchGUI(tk.Tk):
             self.words_list.insert(tk.END, w)
 
         self.summary_var.set(f"Indexed {len(self.index)} files • Vocabulary size {len(vocab)}.")
+        self.match_var.set("Docs matched: 0")
+
 
     def _on_search(self):
         self.results_list.delete(0, tk.END)
         if not self.index:
             messagebox.showwarning("No index", "Please Extract first.")
             return
+
         key = self.query_var.get().strip()
         if not key:
+            self.match_var.set("Docs matched: 0")
             return
+
         hits = search_files(self.index, key)
+
         if hits:
             for m in hits:
                 self.results_list.insert(tk.END, f"./Jan/{Path(m).name}")
+            self.match_var.set(f"Docs matched: {len(hits)}")
         else:
             self.results_list.insert(tk.END, "no match")
+            self.match_var.set("Docs matched: 0")
 
 
 if __name__ == "__main__":
