@@ -1,2 +1,4 @@
 beautifulsoup4>=4.12
 pytest>=8.0   #use for future testing as more code gets added in later parts
+requests>=2.32   # for future web crawling (Part 3)
+lxml>=5.2        # improves BeautifulSoup HTML parsing
