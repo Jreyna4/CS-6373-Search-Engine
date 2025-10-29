@@ -1,4 +1,3 @@
-
 """CSCI 6373 — Part 1 Tkinter GUI (sketch-aligned + plugin loader + vocabulary view)
 
 Purpose
