@@ -22,6 +22,8 @@ from .part3_spider import (
     boolean_but,
     phrase_search,
     vector_rank,
+    WORD_RE,
+    make_snippet,
 )
 
 class Part3Tab:
@@ -54,15 +56,16 @@ class Part3Tab:
         lf.pack(fill="both", expand=True)
         self.file_list = tk.Listbox(lf, height=24)
         self.file_list.pack(fill="both", expand=True)
+        self.file_list.bind("<Double-Button-1>", self._open_from_left)
 
         # Right: query UI
         ttk.Label(right, text="Search", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         qrow = ttk.Frame(right); qrow.pack(fill="x", pady=(4,6))
         ttk.Label(qrow, text="Search key:").pack(side="left")
         self.qvar = tk.StringVar()
-        ent = ttk.Entry(qrow, textvariable=self.qvar, width=48)
-        ent.pack(side="left", padx=6)
-        ent.bind("<Return>", lambda e: self._run_query())
+        self.entry = ttk.Entry(qrow, textvariable=self.qvar, width=48)
+        self.entry.pack(side="left", padx=6)
+        self.entry.bind("<Return>", lambda e: self._run_query())
         ttk.Button(qrow, text="Search", command=self._run_query).pack(side="left")
 
         # NEW: docs matched counter
@@ -74,6 +77,7 @@ class Part3Tab:
         self.results = tk.Listbox(rf, height=24)
         self.results.pack(fill="both", expand=True)
         self.results.bind("<Double-Button-1>", self._open_hit)
+        self._result_docids: list[int] = []
 
         ttk.Label(
             self.frame,
@@ -101,12 +105,16 @@ class Part3Tab:
         self.results.delete(0, "end")
         self.file_list.delete(0, "end")
         self.match_var.set("Docs matched: 0")  # reset counter
+        self._result_docids.clear()
         try:
             path = self.zip_path or "rhf.zip"
             self.inv = build_index_from_spider(path, start="rhf/index.html")
             self.tmp_root = extract_zip_to_temp(path)
             for d in sorted(self.inv.docs):
                 self.file_list.insert("end", self.inv.docs[d].path.strip("./"))
+            # Ready for searching
+            self.qvar.set("")
+            self.entry.focus_set()
             messagebox.showinfo("Spider complete", f"Indexed {self.inv.N} reachable pages.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -114,6 +122,7 @@ class Part3Tab:
     def _run_query(self):
         """Handle Boolean, phrase (quoted), or ranked search."""
         self.results.delete(0, "end")
+        self._result_docids.clear()
         if not self.inv:
             self.results.insert("end", "Build the index first")
             self.match_var.set("Docs matched: 0")
@@ -146,19 +155,51 @@ class Part3Tab:
             self.results.insert("end", "no match")
             self.match_var.set("Docs matched: 0")
             return
+
         self.match_var.set(f"Docs matched: {len(ranked)}")
+        terms = {m.group(0).lower() for m in WORD_RE.finditer(q)}
+
         for d, score in ranked:
-            self.results.insert("end", f"{score:0.4f}  {self.inv.docs[d].path.strip('./')}")
+            doc = self.inv.docs[d]
+            rel = doc.path.strip("./")
+            title = doc.title or rel
+            snippet = make_snippet(doc.text, terms)
+            if snippet:
+                line = f"{score:0.4f}  {title} — {rel}    {snippet}"
+            else:
+                line = f"{score:0.4f}  {title} — {rel}"
+            self.results.insert("end", line)
+            self._result_docids.append(d)
 
     def _show(self, docs: Set[int]):
-        """Render a set of doc ids and update the counter."""
+        """Render a set of doc ids and update the counter (with title/snippet)."""
+        self._result_docids.clear()
         if not docs:
             self.results.insert("end", "no match")
             self.match_var.set("Docs matched: 0")
             return
+
         self.match_var.set(f"Docs matched: {len(docs)}")
+        q = self.qvar.get().strip()
+        terms = {m.group(0).lower() for m in WORD_RE.finditer(q)}
+
         for d in sorted(docs):
-            self.results.insert("end", self.inv.docs[d].path.strip("./"))
+            doc = self.inv.docs[d]
+            rel = doc.path.strip("./")
+            title = doc.title or rel
+            snippet = make_snippet(doc.text, terms)
+            line = f"{title} — {rel}" + (f"    {snippet}" if snippet else "")
+            self.results.insert("end", line)
+            self._result_docids.append(d)
+    def _open_from_left(self, event=None):
+        """Open the double-clicked item from the left crawled-files list."""
+        if not self.tmp_root:
+            return
+        sel = self.file_list.curselection()
+        if not sel:
+            return
+        rel = self.file_list.get(sel[0])
+        open_local_in_browser(self.tmp_root, rel)
 
     def _open_hit(self, event=None):
         """Open the selected result in the default browser."""
@@ -167,8 +208,11 @@ class Part3Tab:
         sel = self.results.curselection()
         if not sel:
             return
-        line = self.results.get(sel[0])
-        rel = line.split()[-1]  # works for both "score path" and "path"
+        row = sel[0]
+        if row >= len(self._result_docids):
+            return
+        d = self._result_docids[row]
+        rel = self.inv.docs[d].path.strip("./")
         open_local_in_browser(self.tmp_root, rel)
 
 def build_tab(parent):

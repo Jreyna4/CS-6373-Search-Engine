@@ -67,8 +67,11 @@ class Posting:
 @dataclass
 class DocInfo:
     path: str
+    title: str = ""
+    text: str = ""     # full visible text for snippets
     length: int = 0
     norm: float = 0.0  # vector length for cosine
+
 
 class InvertedIndex:
     def __init__(self):
@@ -89,9 +92,9 @@ class InvertedIndex:
 # HTML parsing
 # -----------------------------
 
-def _clean_html(raw: bytes) -> Tuple[str, List[Tuple[str, str]]]:
+def _clean_html(raw: bytes) -> Tuple[str, str, List[Tuple[str, str]]]:
     """
-    Return visible text and links as (href, anchor_text).
+    Return (title, visible_text, links-as-(href,anchor_text)).
     - Removes <script>, <style>, and HTML comments.
     """
     soup = BeautifulSoup(raw, "html.parser")
@@ -99,13 +102,15 @@ def _clean_html(raw: bytes) -> Tuple[str, List[Tuple[str, str]]]:
         s.extract()
     for c in soup(text=lambda it: isinstance(it, Comment)):
         c.extract()
+
+    title = soup.title.get_text(strip=True) if soup.title else ""
     text = soup.get_text(separator=" ")
     links: List[Tuple[str, str]] = []
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         anchor = a.get_text(" ", strip=True)
         links.append((href, anchor))
-    return text, links
+    return title, text, links
 
 
 # -----------------------------
@@ -137,7 +142,7 @@ def _resolve_rel(base: str, href: str) -> str:
     joined = _norm_zip_path(os.path.normpath(os.path.join(base_dir, href)))
     return joined
 
-def spider_zip(zip_path: str, start: str = "rhf/index.html") -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+def spider_zip(zip_path: str, start: str = "rhf/index.html") -> Tuple[Dict[str, Tuple[str, str]], Dict[str, List[str]]]:
     """
     Breadth-first crawl inside the ZIP starting at start.
     Returns:
@@ -158,7 +163,7 @@ def spider_zip(zip_path: str, start: str = "rhf/index.html") -> Tuple[Dict[str, 
 
         q = deque([start])
         seen: Set[str] = set()
-        pages: Dict[str, str] = {}
+        pages: Dict[str, Tuple[str, str]] = {}
         incoming: Dict[str, List[str]] = defaultdict(list)
 
         while q:
@@ -170,8 +175,8 @@ def spider_zip(zip_path: str, start: str = "rhf/index.html") -> Tuple[Dict[str, 
                 continue
 
             raw = zf.read(cur)
-            text, links = _clean_html(raw)
-            pages[cur] = text
+            title, text, links = _clean_html(raw)   # FIX: correct unpack
+            pages[cur] = (title, text)              # FIX: store (title, text)
 
             for href, anch in links:
                 tgt = _resolve_rel(cur, href)
@@ -182,7 +187,34 @@ def spider_zip(zip_path: str, start: str = "rhf/index.html") -> Tuple[Dict[str, 
                 if tgt in names and _is_html(tgt) and anch:
                     incoming[tgt].append(anch)
 
+        for name in names:
+            if _is_html(name) and name not in pages:
+                raw = zf.read(name)
+                title, text, _ = _clean_html(raw)
+                pages[name] = (title, text)
+
         return pages, incoming
+
+def make_snippet(text: str, terms: Set[str], win: int = 80) -> str:
+    """
+    Return a short '...window...' around the earliest occurrence of any term.
+    """
+    if not text or not terms:
+        return ""
+    tlow = text.lower()
+    hits = [tlow.find(t) for t in terms if t]
+    hits = [h for h in hits if h >= 0]
+    if not hits:
+        return ""
+    i = min(hits)
+    start = max(0, i - win // 2)
+    end = min(len(text), start + win)
+    snippet = text[start:end].replace("\n", " ").strip()
+    if start > 0:
+        snippet = "..." + snippet
+    if end < len(text):
+        snippet = snippet + "..."
+    return snippet
 
 
 # -----------------------------
@@ -202,15 +234,23 @@ def build_index_from_spider(zip_path: str, start: str = "rhf/index.html") -> Inv
     path_to_id = {p: i for i, p in enumerate(ordered)}
 
     for path, doc_id in path_to_id.items():
+        title, body_text = pages[path]
+
         # Tokens from body
-        body = _tokens_from_text(pages[path])
+        body = _tokens_from_text(body_text)
+
         # Tokens from incoming anchors (credited to target)
         extra: List[str] = []
         for a in incoming.get(path, []):
             extra.extend(_tokens_from_text(a))
         tokens = body + extra
 
-        inv.docs[doc_id] = DocInfo(path=f"./{path}", length=len(tokens))
+        inv.docs[doc_id] = DocInfo(
+            path=f"./{path}",
+            title=title,
+            text=body_text,
+            length=len(tokens),
+        )
 
         # Collect positions per term for this document
         pos: Dict[str, List[int]] = defaultdict(list)
@@ -272,25 +312,34 @@ def boolean_but(inv: InvertedIndex, left: List[str], right: List[str]) -> Set[in
 
 def phrase_search(inv: InvertedIndex, phrase: str) -> Set[int]:
     """
-    Exact consecutive phrase: the k-th term must appear at position p+k.
+    Exact consecutive phrase over the *indexed* terms (stopwords removed at index time).
     Steps:
-      1) Intersect doc sets of the phrase terms
-      2) For each candidate doc, verify adjacency using positions
+      1) Intersect docs of the phrase terms that are actually in the index
+      2) Verify adjacency using positions
     """
     words = [w for w in (m.group(0).lower() for m in WORD_RE.finditer(phrase)) if w not in STOPWORDS]
     if not words:
         return set()
+
+    # Only keep terms present in the index; if none, no candidates
+    words = [w for w in words if w in inv.index]
+    if not words:
+        return set()
+
     cand = boolean_and(inv, words)
     out: Set[int] = set()
     for d in cand:
-        pos_lists = [inv.postings(w)[d].positions for w in words]
-        # Quick check using sets on the following lists
+        # All words are guaranteed to be in index
+        pos_lists = [inv.postings(w)[d].positions for w in words if d in inv.postings(w)]
+        if len(pos_lists) != len(words):
+            continue
         next_sets = [set(lst) for lst in pos_lists[1:]]
         for p0 in pos_lists[0]:
             if all((p0 + i + 1) in next_sets[i] for i in range(len(next_sets))):
                 out.add(d)
                 break
     return out
+
 
 def vector_rank(inv: InvertedIndex, query: str, topk: int = 30) -> List[Tuple[int, float]]:
     """
