@@ -12,6 +12,8 @@ Actions
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from typing import Set
+import threading
+
 
 from .part3_spider import (
     build_index_from_spider,
@@ -43,14 +45,34 @@ class Part3Tab:
         self.zlabel.pack(side="left", padx=8)
         ttk.Button(top, text="Use rhf.zip in project root", command=self._use_default).pack(side="right")
 
-        # ---- Two columns ----
-        main = ttk.Frame(self.frame); main.pack(fill="both", expand=True)
-        left = ttk.Frame(main);  left.pack(side="left", fill="both", expand=True, padx=(0,6))
-        right = ttk.Frame(main); right.pack(side="left", fill="both", expand=True, padx=(6,0))
+        # ---- Two columns (resizable) ----
+        split = tk.PanedWindow(self.frame, orient="horizontal", sashwidth=5)
+        split.pack(fill="both", expand=True)
+
+        left = ttk.Frame(split, padding=(0, 0, 6, 0))
+        right = ttk.Frame(split, padding=(6, 0, 0, 0))
+
+        # Add panes with weights (relative resize) and a minimum size for the left pane
+        split.add(left, minsize=260)
+        split.add(right, minsize=340)
+
+        # Set initial sash position AFTER layout so 'winfo_width' is valid.
+        def _init_sash():
+            try:
+                total = split.winfo_width()
+                if total <= 1:
+                    self.frame.after(50, _init_sash)
+                    return
+                split.sashpos(0, int(total * 0.42))
+            except Exception:
+                pass
+        self.frame.after_idle(_init_sash)
+
 
         # Left: spider and file list
         ttk.Label(left, text="Spider + Index", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        ttk.Button(left, text="Crawl and Build Index", command=self._crawl_build).pack(anchor="w", pady=(4,6))
+        self._crawl_btn = ttk.Button(left, text="Crawl and Build Index", command=self._crawl_build_async)
+        self._crawl_btn.pack(anchor="w", pady=(4,6))
 
         lf = ttk.LabelFrame(left, text="Crawled files")
         lf.pack(fill="both", expand=True)
@@ -99,7 +121,82 @@ class Part3Tab:
     def _use_default(self):
         self.zip_path = "rhf.zip"
         self.zlabel.config(text="Using rhf.zip in project root")
-        
+
+    def _crawl_build_async(self):
+        """Start crawl/index in a worker thread and show a modal progress dialog."""
+        # Progress dialog (modal)
+        self._prog = tk.Toplevel(self.frame)
+        self._prog.title("Building index…")
+        self._prog.transient(self.frame.winfo_toplevel())
+        self._prog.grab_set()  # modal
+        ttk.Label(self._prog, text="Crawling and indexing rhf.zip…").pack(padx=12, pady=(12, 6))
+        self._pb = ttk.Progressbar(self._prog, mode="indeterminate", length=260)
+        self._pb.pack(padx=12, pady=(0, 12))
+        self._pb.start(10)
+
+        # Disable the button while running
+        try:
+            self._crawl_btn.state(["disabled"])
+        except Exception:
+            pass
+
+        # Kick off worker thread
+        t = threading.Thread(target=self._crawl_build_worker, daemon=True)
+        t.start()
+
+    def _crawl_build_worker(self):
+        """Background thread: do the heavy work, then hand results back to the UI thread."""
+        try:
+            path = self.zip_path or "rhf.zip"
+            inv, from_cache = build_index_from_spider(path, start="rhf/index.html", use_cache=True)
+            tmp_root = extract_zip_to_temp(path)
+            # hand off to main thread
+            self.frame.after(0, lambda: self._crawl_build_done(inv=inv, tmp_root=tmp_root, from_cache=from_cache))
+        except Exception as e:
+            self.frame.after(0, lambda: self._crawl_build_done(error=e))
+
+    def _crawl_build_done(self, inv=None, tmp_root=None, from_cache=False, error=None):
+        """UI thread: close dialog, update widgets, show message."""
+        # Close progress dialog
+        try:
+            if hasattr(self, "_pb"):
+                self._pb.stop()
+            if hasattr(self, "_prog") and self._prog.winfo_exists():
+                self._prog.grab_release()
+                self._prog.destroy()
+        except Exception:
+            pass
+
+        # Re-enable button
+        try:
+            self._crawl_btn.state(["!disabled"])
+        except Exception:
+            pass
+
+        if error is not None:
+            messagebox.showerror("Error", str(error))
+            return
+
+        # Update state/UI
+        self.inv = inv
+        self.tmp_root = tmp_root
+
+        self.results.delete(0, "end")
+        self.file_list.delete(0, "end")
+        self.match_var.set("Docs matched: 0")
+        self._result_docids.clear()
+
+        for d in sorted(self.inv.docs):
+            self.file_list.insert("end", self.inv.docs[d].path.strip("./"))
+
+        self.qvar.set("")
+        self.entry.focus_set()
+
+        msg = f"Indexed {self.inv.N} pages."
+        if from_cache:
+            pass
+        messagebox.showinfo("Spider complete", msg)
+
     def _crawl_build(self):
         """Run the spider and build the index, then list files."""
         self.results.delete(0, "end")
@@ -108,14 +205,17 @@ class Part3Tab:
         self._result_docids.clear()
         try:
             path = self.zip_path or "rhf.zip"
-            self.inv = build_index_from_spider(path, start="rhf/index.html")
+            self.inv, from_cache = build_index_from_spider(path, start="rhf/index.html", use_cache=True)
             self.tmp_root = extract_zip_to_temp(path)
             for d in sorted(self.inv.docs):
                 self.file_list.insert("end", self.inv.docs[d].path.strip("./"))
             # Ready for searching
             self.qvar.set("")
             self.entry.focus_set()
-            messagebox.showinfo("Spider complete", f"Indexed {self.inv.N} reachable pages.")
+            msg = f"Indexed {self.inv.N} pages."
+            if from_cache:
+                msg += " (loaded from cache)"
+            messagebox.showinfo("Spider complete", msg)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 

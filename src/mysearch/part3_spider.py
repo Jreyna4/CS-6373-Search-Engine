@@ -18,6 +18,9 @@ Design choices
 
 from __future__ import annotations
 
+import pickle
+import pathlib
+
 import os
 import re
 import math
@@ -92,12 +95,21 @@ class InvertedIndex:
 # HTML parsing
 # -----------------------------
 
+def _make_soup(raw: bytes):
+    """
+    Use lxml parser if available (faster); fall back to html.parser.
+    """
+    try:
+        return BeautifulSoup(raw, "lxml")
+    except Exception:
+        return BeautifulSoup(raw, "html.parser")
+
 def _clean_html(raw: bytes) -> Tuple[str, str, List[Tuple[str, str]]]:
     """
     Return (title, visible_text, links-as-(href,anchor_text)).
     - Removes <script>, <style>, and HTML comments.
     """
-    soup = BeautifulSoup(raw, "html.parser")
+    soup = _make_soup(raw)
     for s in soup.find_all(["style", "script"]):
         s.extract()
     for c in soup(text=lambda it: isinstance(it, Comment)):
@@ -221,11 +233,41 @@ def make_snippet(text: str, terms: Set[str], win: int = 80) -> str:
 # Build the inverted index
 # -----------------------------
 
-def build_index_from_spider(zip_path: str, start: str = "rhf/index.html") -> InvertedIndex:
+def _zip_signature(zip_path: str) -> tuple[int, float]:
     """
-    Crawl reachable pages, tokenize body text, add incoming anchor tokens
-    to their target page, and compute tf-idf and norms.
+    Return (size, mtime) so we can invalidate the cache when the ZIP changes.
     """
+    p = pathlib.Path(zip_path)
+    stat = p.stat()
+    return (stat.st_size, stat.st_mtime)
+
+def build_index_from_spider(zip_path: str,
+                            start: str = "rhf/index.html",
+                            use_cache: bool = True,
+                            cache_dir: str = ".cache") -> tuple[InvertedIndex, bool]:
+    """
+    Crawl all HTML pages in the ZIP, tokenize, add incoming anchor tokens,
+    and compute tf-idf and norms.
+
+    If use_cache=True (default), load/save a pickle of the built index keyed
+    by ZIP size+mtime to skip work on repeat runs.
+
+    Returns: (inv, from_cache)
+    """
+    sig = _zip_signature(zip_path)
+    cache_root = pathlib.Path(cache_dir)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_root / f"part3_index_{pathlib.Path(zip_path).name}_{sig[0]}_{int(sig[1])}.pkl"
+
+    if use_cache and cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                inv = pickle.load(f)
+            return inv, True
+        except Exception:
+            # Corrupt cache; ignore and rebuild
+            pass
+
     pages, incoming = spider_zip(zip_path, start)
     inv = InvertedIndex()
 
@@ -276,7 +318,14 @@ def build_index_from_spider(zip_path: str, start: str = "rhf/index.html") -> Inv
     for d in inv.docs:
         inv.docs[d].norm = math.sqrt(inv.docs[d].norm)
 
-    return inv
+    if use_cache:
+        try:
+            with cache_file.open("wb") as f:
+                pickle.dump(inv, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception:
+            pass  # caching is a best-effort optimization
+
+    return inv, False
 
 
 # -----------------------------
